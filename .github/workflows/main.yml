@@ -1,4 +1,4 @@
-name: 22Download daily Dukascopy ticks to Hugging Face
+name: Download daily Dukascopy ticks to Hugging Face
 
 on:
   workflow_dispatch:
@@ -54,7 +54,7 @@ jobs:
           else
             echo "error: fill either Year or both Start/End dates" >&2; exit 1
           fi
-      - name: Download, pack and upload month by month
+      - name: Download, pack and upload year by year
         shell: bash
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -69,16 +69,17 @@ jobs:
           final_stop=$(date -u -d "$end + 1 day" +%F)
 
           while [[ "$current" < "$final_stop" ]]; do
-            month_start="$current"
-            next_month=$(date -u -d "$(date -u -d "$month_start" +%Y-%m-01) + 1 month" +%F)
-            month_end=$(date -u -d "$next_month - 1 day" +%F)
-            if [[ "$month_end" > "$end" ]]; then month_end="$end"; fi
-            echo "===== MONTH CHUNK: $symbol $month_start -> $month_end ====="
+            year_start="$current"
+            next_year=$(date -u -d "$(date -u -d "$year_start" +%Y-01-01) + 1 year" +%F)
+            year_end=$(date -u -d "$next_year - 1 day" +%F)
+            if [[ "$year_end" > "$end" ]]; then year_end="$end"; fi
+
+            echo "===== YEAR CHUNK: $symbol $year_start -> $year_end ====="
             rm -rf data/yearly
             mkdir -p data/yearly
 
-            d="$month_start"
-            stop=$(date -u -d "$month_end + 1 day" +%F)
+            d="$year_start"
+            stop=$(date -u -d "$year_end + 1 day" +%F)
             while [[ "$d" < "$stop" ]]; do
               echo "=== $symbol $d ==="
               python main.py download "$symbol" "$d" "$d" --workers "$workers" --min-lag-hours 0 || true
@@ -86,11 +87,11 @@ jobs:
               d=$(date -u -d "$d + 1 day" +%F)
             done
 
-            echo "===== UPLOAD MONTH CHUNK TO HF: $symbol $month_start -> $month_end ====="
+            echo "===== UPLOAD YEAR CHUNK TO HF: $symbol $year_start -> $year_end ====="
             python export/huggingface_upload.py data/yearly --repo-id "$HF_DATASET"
 
             rm -rf "data/$symbol" data/yearly
-            current=$(date -u -d "$month_end + 1 day" +%F)
+            current=$(date -u -d "$year_end + 1 day" +%F)
           done
       - uses: actions/upload-artifact@v4
         if: always()
