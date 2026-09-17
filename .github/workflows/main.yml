@@ -28,7 +28,7 @@ permissions:
   contents: read
 
 env:
-  HF_DATASET: Esmaeil9ss/Tickdata
+  HF_DATASET: ${{ vars.HF_DATASET || 'Esmaeil9ss/Tickdata' }}
 
 jobs:
   backfill-daily-hf:
@@ -54,25 +54,49 @@ jobs:
           else
             echo "error: fill either Year or both Start/End dates" >&2; exit 1
           fi
-      - name: Download and build one BIN per day
+      - name: Download, pack and upload month by month
         shell: bash
-        run: |
-          set -euo pipefail
-          start="${{ steps.dates.outputs.start }}"; end="${{ steps.dates.outputs.end }}"; symbol="${{ inputs.symbol }}"
-          d="$start"; stop=$(date -u -d "$end + 1 day" +%F)
-          while [[ "$d" < "$stop" ]]; do
-            echo "=== $symbol $d ==="
-            python main.py download "$symbol" "$d" "$d" --workers "${{ inputs.workers }}" --min-lag-hours 0 || true
-            python export/daily_pack.py "$symbol" "$d" "$d" || true
-            d=$(date -u -d "$d + 1 day" +%F)
-          done
-      - name: Upload daily BIN packs to Hugging Face in one batch
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python export/huggingface_upload.py data/yearly --repo-id "$HF_DATASET"
+        run: |
+          set -euo pipefail
+          start="${{ steps.dates.outputs.start }}"
+          end="${{ steps.dates.outputs.end }}"
+          symbol="${{ inputs.symbol }}"
+          workers="${{ inputs.workers }}"
+
+          current="$start"
+          final_stop=$(date -u -d "$end + 1 day" +%F)
+
+          while [[ "$current" < "$final_stop" ]]; do
+            month_start="$current"
+            next_month=$(date -u -d "$(date -u -d "$month_start" +%Y-%m-01) + 1 month" +%F)
+            month_end=$(date -u -d "$next_month - 1 day" +%F)
+            if [[ "$month_end" > "$end" ]]; then month_end="$end"; fi
+
+            echo "===== MONTH CHUNK: $symbol $month_start -> $month_end ====="
+            rm -rf data/yearly
+            mkdir -p data/yearly
+
+            d="$month_start"
+            stop=$(date -u -d "$month_end + 1 day" +%F)
+            while [[ "$d" < "$stop" ]]; do
+              echo "=== $symbol $d ==="
+              python main.py download "$symbol" "$d" "$d" --workers "$workers" --min-lag-hours 0 || true
+              python export/daily_pack.py "$symbol" "$d" "$d" || true
+              d=$(date -u -d "$d + 1 day" +%F)
+            done
+
+            echo "===== UPLOAD MONTH CHUNK TO HF: $symbol $month_start -> $month_end ====="
+            python export/huggingface_upload.py data/yearly --repo-id "$HF_DATASET"
+
+            rm -rf "data/$symbol" data/yearly
+            current=$(date -u -d "$month_end + 1 day" +%F)
+          done
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: daily-${{ inputs.symbol }}-${{ steps.dates.outputs.start }}_${{ steps.dates.outputs.end }}
-          path: data/yearly/*.BIN
+          name: backfill-${{ inputs.symbol }}-${{ steps.dates.outputs.start }}_${{ steps.dates.outputs.end }}-metadata
+          path: data/metadata.db
           if-no-files-found: ignore
           retention-days: 7
