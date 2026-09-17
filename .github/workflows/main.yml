@@ -1,14 +1,14 @@
-name: Download Dukascopy ticks
+name: Download daily Dukascopy ticks to Hugging Face
 
 on:
   workflow_dispatch:
     inputs:
       symbol:
-        description: "Symbol (e.g. EURUSD)"
+        description: "Symbol (e.g. XAUUSD)"
         required: true
         default: "XAUUSD"
       year:
-        description: "Year (e.g. 2025) — downloads that whole year; leave empty to use start/end dates below"
+        description: "Year to backfill as daily BIN files; leave empty to use start/end"
         required: false
         default: ""
       start:
@@ -25,52 +25,54 @@ on:
         default: "15"
 
 permissions:
-  contents: write   # GITHUB_TOKEN needs this to create releases
+  contents: read
+
+env:
+  HF_DATASET: Esmaeil9ss/Tickdata
 
 jobs:
-  download:
+  backfill-daily-hf:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install dependencies
-        run: pip install requests orjson   # fastapi/uvicorn فقط برای web UI لازم‌اند
-
+        run: pip install -r requirements.txt
       - name: Resolve date range
         id: dates
         run: |
           YEAR="${{ inputs.year }}"
           if [ -n "$YEAR" ]; then
-            if ! [[ "$YEAR" =~ ^[0-9]{4}$ ]]; then
-              echo "error: Year must be 4 digits, got '$YEAR'" >&2
-              exit 1
-            fi
+            if ! [[ "$YEAR" =~ ^[0-9]{4}$ ]]; then echo "error: Year must be 4 digits" >&2; exit 1; fi
             echo "start=$YEAR-01-01" >> "$GITHUB_OUTPUT"
             echo "end=$YEAR-12-31" >> "$GITHUB_OUTPUT"
           elif [ -n "${{ inputs.start }}" ] && [ -n "${{ inputs.end }}" ]; then
             echo "start=${{ inputs.start }}" >> "$GITHUB_OUTPUT"
             echo "end=${{ inputs.end }}" >> "$GITHUB_OUTPUT"
           else
-            echo "error: fill either Year or both Start/End dates" >&2
-            exit 1
+            echo "error: fill either Year or both Start/End dates" >&2; exit 1
           fi
-
-      - name: Download year by year, merge, zip and upload releases
+      - name: Download and build one BIN per day
+        shell: bash
+        run: |
+          set -euo pipefail
+          start="${{ steps.dates.outputs.start }}"; end="${{ steps.dates.outputs.end }}"; symbol="${{ inputs.symbol }}"
+          d="$start"; stop=$(date -u -d "$end + 1 day" +%F)
+          while [[ "$d" < "$stop" ]]; do
+            echo "=== $symbol $d ==="
+            python main.py download "$symbol" "$d" "$d" --workers "${{ inputs.workers }}" --min-lag-hours 0 || true
+            python export/daily_pack.py "$symbol" "$d" "$d" || true
+            d=$(date -u -d "$d + 1 day" +%F)
+          done
+      - name: Upload daily BIN packs to Hugging Face in one batch
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: >-
-          python main.py download "${{ inputs.symbol }}" "${{ steps.dates.outputs.start }}"
-          "${{ steps.dates.outputs.end }}" --workers ${{ inputs.workers }} --yearly --upload-release
-
-      - name: Upload yearly packs as artifact
-        uses: actions/upload-artifact@v4
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python export/huggingface_upload.py data/yearly --repo-id "$HF_DATASET"
+      - uses: actions/upload-artifact@v4
         with:
-          name: ticks-${{ inputs.symbol }}-${{ steps.dates.outputs.start }}_${{ steps.dates.outputs.end }}
-          path: data/yearly/
+          name: daily-${{ inputs.symbol }}-${{ steps.dates.outputs.start }}_${{ steps.dates.outputs.end }}
+          path: data/yearly/*.BIN
           if-no-files-found: ignore
           retention-days: 7
