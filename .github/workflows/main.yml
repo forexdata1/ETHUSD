@@ -1,0 +1,76 @@
+name: Download Dukascopy ticks
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Symbol (e.g. EURUSD)"
+        required: true
+        default: "XAUUSD"
+      year:
+        description: "Year (e.g. 2025) — downloads that whole year; leave empty to use start/end dates below"
+        required: false
+        default: ""
+      start:
+        description: "Start date (YYYY-MM-DD) — ignored when Year is set"
+        required: false
+        default: ""
+      end:
+        description: "End date (YYYY-MM-DD) — ignored when Year is set"
+        required: false
+        default: ""
+      workers:
+        description: "Concurrent workers (max 64)"
+        required: false
+        default: "15"
+
+permissions:
+  contents: write   # GITHUB_TOKEN needs this to create releases
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests orjson   # fastapi/uvicorn فقط برای web UI لازم‌اند
+
+      - name: Resolve date range
+        id: dates
+        run: |
+          YEAR="${{ inputs.year }}"
+          if [ -n "$YEAR" ]; then
+            if ! [[ "$YEAR" =~ ^[0-9]{4}$ ]]; then
+              echo "error: Year must be 4 digits, got '$YEAR'" >&2
+              exit 1
+            fi
+            echo "start=$YEAR-01-01" >> "$GITHUB_OUTPUT"
+            echo "end=$YEAR-12-31" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.start }}" ] && [ -n "${{ inputs.end }}" ]; then
+            echo "start=${{ inputs.start }}" >> "$GITHUB_OUTPUT"
+            echo "end=${{ inputs.end }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "error: fill either Year or both Start/End dates" >&2
+            exit 1
+          fi
+
+      - name: Download year by year, merge, zip and upload releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: >-
+          python main.py download "${{ inputs.symbol }}" "${{ steps.dates.outputs.start }}"
+          "${{ steps.dates.outputs.end }}" --workers ${{ inputs.workers }} --yearly --upload-release
+
+      - name: Upload yearly packs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ticks-${{ inputs.symbol }}-${{ steps.dates.outputs.start }}_${{ steps.dates.outputs.end }}
+          path: data/yearly/
+          if-no-files-found: ignore
+          retention-days: 7
