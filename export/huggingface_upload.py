@@ -9,11 +9,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from huggingface_hub import HfApi, hf_hub_download
 
-DAILY_RE = re.compile(r"^(?P<symbol>.+)_(?P<day>\d{4}-\d{2}-\d{2})\.BIN$", re.I)
+# Accept both true daily names and single-day range names created by pack_label:
+#   XAUUSD_2013-01-01.BIN
+#   XAUUSD_2013-01-01_2013-01-01.BIN
+# The uploaded HF path is normalized to:
+#   XAUUSD/XAUUSD_2013-01-01.BIN
+DAILY_RE = re.compile(
+    r"^(?P<symbol>.+?)_(?P<day>\d{4}-\d{2}-\d{2})(?:_\d{4}-\d{2}-\d{2})?\.BIN$",
+    re.I,
+)
 
 @dataclass(frozen=True)
 class Entry:
-    symbol: str; path: str; day: str; size: int
+    symbol: str
+    path: str
+    day: str
+    size: int
+    source: Path | None = None
 
 def retry(label, fn, attempts=5):
     delay=5; last=None
@@ -40,8 +52,19 @@ def read_index(repo_id, repo_type, token):
         if len(parts) < 4: continue
         try:
             rel, day, size = parts[1], parts[2], int(parts[3])
-            out[rel]=Entry(rel.split("/",1)[0], rel, day, size)
-        except ValueError: pass
+            # Keep only normalized catalog rows. Bad old rows like
+            # XAUUSD_2013-01-01/... are intentionally dropped from index.txt.
+            if "/" not in rel:
+                continue
+            folder, name = rel.split("/", 1)
+            m = DAILY_RE.match(name)
+            if not m:
+                continue
+            sym = m.group("symbol").upper()
+            normalized = f"{sym}/{sym}_{m.group('day')}.BIN"
+            out[normalized] = Entry(sym, normalized, day, size)
+        except ValueError:
+            pass
     return out
 
 def local_entries(folder: Path):
@@ -51,7 +74,7 @@ def local_entries(folder: Path):
         if not m: continue
         sym=m.group("symbol").upper(); day=m.group("day")
         rel=f"{sym}/{sym}_{day}.BIN"
-        out[rel]=Entry(sym, rel, day, p.stat().st_size)
+        out[rel]=Entry(sym, rel, day, p.stat().st_size, p)
     return out
 
 def index_text(entries):
@@ -76,9 +99,12 @@ def upload_batch(repo_id, source_dir: Path, token, repo_type="dataset"):
     merged=dict(existing); merged.update(local)
     with tempfile.TemporaryDirectory() as td:
         stage=Path(td)/"stage"; stage.mkdir()
-        for rel in changed:
-            src=next(source_dir.rglob(Path(rel).name))
-            dst=stage/rel; dst.parent.mkdir(parents=True, exist_ok=True); dst.write_bytes(src.read_bytes())
+        for rel, entry in changed.items():
+            if entry.source is None:
+                continue
+            dst=stage/rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(entry.source.read_bytes())
         (stage/"index.txt").write_text(index_text(merged), encoding="utf-8")
         print(f"HF upload: {len(changed)} changed BIN file(s) + index.txt -> {repo_id}")
         retry("upload_folder", lambda: api.upload_folder(repo_id=repo_id, repo_type=repo_type, folder_path=stage, path_in_repo="", token=token, commit_message=f"Upload daily tick data ({len(changed)} files)"))
