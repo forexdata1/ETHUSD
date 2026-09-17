@@ -1,0 +1,29 @@
+"""Build one daily MT5-ready BIN pack from downloaded hourly files."""
+from __future__ import annotations
+import argparse
+from datetime import datetime
+from config.settings import Settings
+from core.services.instrument_search import InstrumentCatalog
+from export.yearly import merge_range, yearly_output_dir
+from storage.tick_storage import TickStorage
+
+def parse_date(s: str):
+    return datetime.strptime(s, "%Y-%m-%d").date()
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("symbol")
+    ap.add_argument("start", type=parse_date)
+    ap.add_argument("end", type=parse_date)
+    args = ap.parse_args()
+    settings = Settings(); settings.ensure_directories()
+    instrument = InstrumentCatalog(settings.instruments_file).get(args.symbol)
+    result = merge_range(TickStorage(settings.data_dir), instrument, args.start, args.end, yearly_output_dir(settings.data_dir))
+    if result is None:
+        print(f"No stored ticks for {instrument.symbol} {args.start}..{args.end}; skipping pack.")
+        return 0
+    path, ticks = result
+    print(f"Packed {path} ({ticks:,} ticks, {path.stat().st_size:,} bytes)")
+    return 0
+if __name__ == "__main__":
+    raise SystemExit(main())
