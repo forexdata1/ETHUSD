@@ -1,0 +1,3 @@
+requests
+orjson
+huggingface_hub>=0.24
