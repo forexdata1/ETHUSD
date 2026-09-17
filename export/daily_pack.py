@@ -1,9 +1,15 @@
-"""Build one daily MT5-ready BIN pack from downloaded hourly files."""
+"""Build MT5-ready daily BIN packs from downloaded hourly files.
+
+Even when start/end cover several days, this script writes one output file per
+calendar day so Hugging Face receives:
+    XAUUSD/XAUUSD_YYYY-MM-DD.BIN
+not one combined multi-day BIN.
+"""
 from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # When this file is executed as `python export/daily_pack.py`, Python puts
@@ -33,19 +39,27 @@ def main() -> int:
     settings = Settings()
     settings.ensure_directories()
     instrument = InstrumentCatalog(settings.instruments_file).get(args.symbol)
-    result = merge_range(
-        TickStorage(settings.data_dir),
-        instrument,
-        args.start,
-        args.end,
-        yearly_output_dir(settings.data_dir),
-    )
-    if result is None:
-        print(f"No stored ticks for {instrument.symbol} {args.start}..{args.end}; skipping pack.")
-        return 0
+    storage = TickStorage(settings.data_dir)
+    out_dir = yearly_output_dir(settings.data_dir)
 
-    path, ticks = result
-    print(f"Packed {path} ({ticks:,} ticks, {path.stat().st_size:,} bytes)")
+    if args.end < args.start:
+        raise SystemExit("error: end date is before start date")
+
+    made = 0
+    ticks_total = 0
+    day = args.start
+    while day <= args.end:
+        result = merge_range(storage, instrument, day, day, out_dir)
+        if result is None:
+            print(f"No stored ticks for {instrument.symbol} {day}; skipping daily pack.")
+        else:
+            path, ticks = result
+            made += 1
+            ticks_total += ticks
+            print(f"Packed {path} ({ticks:,} ticks, {path.stat().st_size:,} bytes)")
+        day += timedelta(days=1)
+
+    print(f"Daily pack summary: {made} file(s), {ticks_total:,} ticks total")
     return 0
 
 
