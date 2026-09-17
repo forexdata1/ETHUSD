@@ -1,0 +1,235 @@
+name: Scheduled tick sync (daily/weekly/monthly/yearly)
+
+# Four schedules, all at 00:05 UTC (GMT+0). Each finished period is merged
+# into one pack and uploaded to a GitHub release automatically. If the
+# TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID secrets are set, the pack is also
+# posted to a Telegram channel by a bot (files up to ~49 MB; larger packs
+# fall back to a message with the release download link).
+#   daily   -> yesterday (full day)
+#   weekly  -> last Monday 00:00 .. this Monday 00:00
+#   monthly -> last full calendar month
+#   yearly  -> last full calendar year
+
+on:
+  schedule:
+    - cron: "5 0 * * *"     # daily,   every day 00:05 UTC
+    - cron: "5 0 * * 1"     # weekly,  Mondays 00:05 UTC
+    - cron: "5 0 1 * *"     # monthly, 1st of month 00:05 UTC
+    - cron: "5 0 1 1 *"     # yearly,  January 1st 00:05 UTC
+  workflow_dispatch:
+    inputs:
+      period:
+        description: "Period to build (dates computed from today unless overridden)"
+        type: choice
+        options:
+          - daily
+          - weekly
+          - monthly
+          - yearly
+        default: daily
+      symbols:
+        description: "Space-separated symbols (default: DEFAULT_SYMBOLS env below)"
+        required: false
+        default: ""
+      start:
+        description: "Optional override start date (YYYY-MM-DD)"
+        required: false
+        default: ""
+      end:
+        description: "Optional override end date (YYYY-MM-DD)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # GITHUB_TOKEN needs this to create releases
+
+env:
+  DEFAULT_SYMBOLS: "XAUUSD"   # edit (space-separated) to sync more symbols
+
+jobs:
+  daily:
+    if: >-
+      github.event.schedule == '5 0 * * *' ||
+      (github.event_name == 'workflow_dispatch' && inputs.period == 'daily')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install requests orjson   # fastapi/uvicorn فقط برای web UI لازم‌اند
+      - name: Compute period dates
+        id: dates
+        run: |
+          if [ -n "${{ inputs.start }}" ] && [ -n "${{ inputs.end }}" ]; then
+            echo "start=${{ inputs.start }}" >> "$GITHUB_OUTPUT"
+            echo "end=${{ inputs.end }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "start=$(date -u -d 'yesterday' +%F)" >> "$GITHUB_OUTPUT"
+            echo "end=$(date -u -d 'yesterday' +%F)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download, pack and upload release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SYMBOLS: ${{ inputs.symbols || env.DEFAULT_SYMBOLS }}
+        run: |
+          rc=0
+          EXTRA_ARGS="--upload-release --min-lag-hours 0"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --notify-telegram"
+          else
+            echo "Telegram secrets not set — skipping channel notification"
+          fi
+          for sym in $SYMBOLS; do
+            echo "=== $sym ${{ steps.dates.outputs.start }} -> ${{ steps.dates.outputs.end }} ==="
+            python main.py download "$sym" \
+              "${{ steps.dates.outputs.start }}" "${{ steps.dates.outputs.end }}" \
+              --workers 15 $EXTRA_ARGS || rc=1
+          done
+          exit $rc
+
+  weekly:
+    if: >-
+      github.event.schedule == '5 0 * * 1' ||
+      (github.event_name == 'workflow_dispatch' && inputs.period == 'weekly')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install requests orjson   # fastapi/uvicorn فقط برای web UI لازم‌اند
+      - name: Compute period dates
+        id: dates
+        run: |
+          if [ -n "${{ inputs.start }}" ] && [ -n "${{ inputs.end }}" ]; then
+            echo "start=${{ inputs.start }}" >> "$GITHUB_OUTPUT"
+            echo "end=${{ inputs.end }}" >> "$GITHUB_OUTPUT"
+          else
+            # Monday run: last Monday 00:00 -> this Monday 00:00 (full week).
+            # dow: 1=Mon .. 7=Sun; start = today-(dow+6), end = today-dow (Sunday).
+            dow=$(date -u +%u)
+            echo "start=$(date -u -d "-$((dow + 6)) days" +%F)" >> "$GITHUB_OUTPUT"
+            echo "end=$(date -u -d "-$dow days" +%F)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download, pack and upload release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SYMBOLS: ${{ inputs.symbols || env.DEFAULT_SYMBOLS }}
+        run: |
+          rc=0
+          EXTRA_ARGS="--upload-release --min-lag-hours 0"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --notify-telegram"
+          else
+            echo "Telegram secrets not set — skipping channel notification"
+          fi
+          for sym in $SYMBOLS; do
+            echo "=== $sym ${{ steps.dates.outputs.start }} -> ${{ steps.dates.outputs.end }} ==="
+            python main.py download "$sym" \
+              "${{ steps.dates.outputs.start }}" "${{ steps.dates.outputs.end }}" \
+              --workers 15 $EXTRA_ARGS || rc=1
+          done
+          exit $rc
+
+  monthly:
+    if: >-
+      github.event.schedule == '5 0 1 * *' ||
+      (github.event_name == 'workflow_dispatch' && inputs.period == 'monthly')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install requests orjson   # fastapi/uvicorn فقط برای web UI لازم‌اند
+      - name: Compute period dates
+        id: dates
+        run: |
+          if [ -n "${{ inputs.start }}" ] && [ -n "${{ inputs.end }}" ]; then
+            echo "start=${{ inputs.start }}" >> "$GITHUB_OUTPUT"
+            echo "end=${{ inputs.end }}" >> "$GITHUB_OUTPUT"
+          else
+            # 1st-of-month run: 1st of last month -> last day of last month
+            first=$(date -u +%Y-%m-01)
+            echo "start=$(date -u -d "$first - 1 month" +%F)" >> "$GITHUB_OUTPUT"
+            echo "end=$(date -u -d "$first - 1 day" +%F)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download, pack and upload release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SYMBOLS: ${{ inputs.symbols || env.DEFAULT_SYMBOLS }}
+        run: |
+          rc=0
+          EXTRA_ARGS="--upload-release --min-lag-hours 0"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --notify-telegram"
+          else
+            echo "Telegram secrets not set — skipping channel notification"
+          fi
+          for sym in $SYMBOLS; do
+            echo "=== $sym ${{ steps.dates.outputs.start }} -> ${{ steps.dates.outputs.end }} ==="
+            python main.py download "$sym" \
+              "${{ steps.dates.outputs.start }}" "${{ steps.dates.outputs.end }}" \
+              --workers 15 $EXTRA_ARGS || rc=1
+          done
+          exit $rc
+
+  yearly:
+    if: >-
+      github.event.schedule == '5 0 1 1 *' ||
+      (github.event_name == 'workflow_dispatch' && inputs.period == 'yearly')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install requests orjson   # fastapi/uvicorn فقط برای web UI لازم‌اند
+      - name: Compute period dates
+        id: dates
+        run: |
+          if [ -n "${{ inputs.start }}" ] && [ -n "${{ inputs.end }}" ]; then
+            echo "start=${{ inputs.start }}" >> "$GITHUB_OUTPUT"
+            echo "end=${{ inputs.end }}" >> "$GITHUB_OUTPUT"
+          else
+            # Jan 1st run: Jan 1 of last year -> Dec 31 of last year (full year)
+            yfirst=$(date -u +%Y-01-01)
+            echo "start=$(date -u -d "$yfirst - 1 year" +%F)" >> "$GITHUB_OUTPUT"
+            echo "end=$(date -u -d "$yfirst - 1 day" +%F)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download, pack and upload release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SYMBOLS: ${{ inputs.symbols || env.DEFAULT_SYMBOLS }}
+        run: |
+          rc=0
+          EXTRA_ARGS="--upload-release --min-lag-hours 0"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --notify-telegram"
+          else
+            echo "Telegram secrets not set — skipping channel notification"
+          fi
+          for sym in $SYMBOLS; do
+            echo "=== $sym ${{ steps.dates.outputs.start }} -> ${{ steps.dates.outputs.end }} ==="
+            python main.py download "$sym" \
+              "${{ steps.dates.outputs.start }}" "${{ steps.dates.outputs.end }}" \
+              --workers 15 $EXTRA_ARGS || rc=1
+          done
+          exit $rc
