@@ -8,7 +8,7 @@ on:
       symbols:
         description: "Space-separated symbols"
         required: false
-        default: "XAUUSD"
+        default: "ETHUSD"
       start:
         description: "Optional override start date (YYYY-MM-DD)"
         required: false
