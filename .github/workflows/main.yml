@@ -6,7 +6,7 @@ on:
       symbol:
         description: "Symbol (e.g. XAUUSD)"
         required: true
-        default: "XAUUSD"
+        default: "ETHUSD"
       year:
         description: "Year to backfill as daily BIN files; leave empty to use start/end"
         required: false
